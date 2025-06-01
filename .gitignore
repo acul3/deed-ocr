@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv/
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+*.env
+!env.example
+
+# OCR outputs
+out/
+output/
+results/
+
+# Credentials
+*.json
+!*example.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Poetry
+poetry.lock 
