@@ -79,7 +79,7 @@ This document details an innovative approach to deed OCR where **Large Language 
 
 The OCR engines are responsible for extracting text from deed images and returning structured JSON output containing:
 
-#### OCR Engine Output Format (JSON Structure)
+#### OCR Engine Output Format (JSON Structure) (Can be change)
 - **full_text**: Complete extracted text preserving layout and formatting
 - **confidence**: Overall confidence score for the extraction (0.0-1.0)
 - **legal_description_candidates**: Array of potential legal description texts identified
