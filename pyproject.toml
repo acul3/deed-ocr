@@ -12,13 +12,14 @@ google-cloud-vision = "^3.4.5"
 boto3 = "^1.29.7"
 click = "^8.1.7"
 python-dotenv = "^1.0.0"
-pdf2image = "^1.16.3"
+pymupdf = "^1.23.0"
 Pillow = "^10.1.0"
 spacy = "^3.7.2"
 pydantic = "^2.5.0"
+google-genai = "^0.1.0"
+json-repair = "^0.25.0"
 # LLM dependencies
 openai = {version = "^1.6.0", optional = true}
-google-generativeai = {version = "^0.3.0", optional = true}
 transformers = {version = "^4.36.0", optional = true}
 torch = {version = "^2.1.0", optional = true}
 # Layout detection
@@ -26,9 +27,9 @@ layoutparser = {version = "^0.3.4", optional = true}
 detectron2 = {version = "^0.6", optional = true}
 
 [tool.poetry.extras]
-llm = ["openai", "google-generativeai", "transformers", "torch"]
+llm = ["openai", "google-genai", "transformers", "torch"]
 layout = ["layoutparser", "detectron2"]
-all = ["openai", "google-generativeai", "transformers", "torch", "layoutparser", "detectron2"]
+all = ["openai", "google-genai", "transformers", "torch", "layoutparser", "detectron2"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.3"
