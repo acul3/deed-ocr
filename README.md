@@ -264,36 +264,47 @@ python -m deed_ocr -i deed.pdf -o .\results --model gemini-2.5-pro-preview-06-05
 
 ## 🎯 High-Accuracy Mode
 
-Enable enhanced AI processing for better extraction results:
+Enable enhanced AI processing for significantly better extraction results:
 
-**Standard Mode:**
+**Standard Mode (Default):**
 - ✅ Fast processing and lower token usage
-- ✅ Good for most standard documents
+- ⚠️ **Less accurate** - good for basic document extraction
 - ✅ Uses thinking budget limitations for efficiency
+- ⚠️ May miss complex details or produce incomplete results
 
 **High-Accuracy Mode (`--high-accuracy`):**
-- 🎯 Removes thinking budget limitations
-- 🎯 Deeper AI analysis for complex documents
+- 🎯 **Significantly more accurate** extraction
+- 🎯 Removes thinking budget limitations for deeper analysis
 - 🎯 Better handling of handwritten or poor-quality scans
+- 🎯 More complete and precise data extraction
 - ⚠️ Higher token usage and processing time
+
+**🏆 Most Accurate Setup:** Combine `--high-accuracy` with `gemini-2.5-pro-preview-06-05` model
 
 **Linux/macOS:**
 ```bash
-# When to use high-accuracy mode
+# High-accuracy mode (more accurate than standard)
 python -m deed_ocr -i complex_deed.pdf -o ./results --high-accuracy
+
+# Most accurate setup: high-accuracy + pro model
+python -m deed_ocr -i complex_deed.pdf -o ./results --high-accuracy --model gemini-2.5-pro-preview-06-05
 ```
 
 **Windows:**
 ```cmd
-# When to use high-accuracy mode
+# High-accuracy mode (more accurate than standard)
 python -m deed_ocr -i complex_deed.pdf -o .\results --high-accuracy
+
+# Most accurate setup: high-accuracy + pro model
+python -m deed_ocr -i complex_deed.pdf -o .\results --high-accuracy --model gemini-2.5-pro-preview-06-05
 ```
 
-**Use high-accuracy for:**
+**Use high-accuracy mode for:**
+- **Any document where accuracy is important** (recommended over standard mode)
 - Complex handwritten documents
 - Poor scan quality or faded text
 - Critical legal documents requiring precision
-- When standard mode produces incomplete results
+- When standard mode produces incomplete or inaccurate results
 
 ## 🤖 Available Gemini Models
 
@@ -301,19 +312,25 @@ Choose the right model for your needs:
 
 | Model | Speed | Accuracy | Use Case |
 |-------|--------|----------|----------|
-| `gemini-2.5-flash-preview-05-20` | ⚡ Fast | Good | Standard processing (default) |
-| `gemini-2.5-pro-preview-06-05` | 🐌 Slower | Better | Complex documents, high accuracy |
+| `gemini-2.5-flash-preview-05-20` | ⚡ Fast | Standard | Default processing (less accurate) |
+| `gemini-2.5-pro-preview-06-05` | 🐌 Slower | **Highest** | **Most accurate results** - recommended for quality |
 
 **Linux/macOS:**
 ```bash
-# Use the powerful pro model
+# Use the most accurate pro model
 python -m deed_ocr -i deed.pdf -o ./results --model gemini-2.5-pro-preview-06-05
+
+# Maximum accuracy: pro model + high-accuracy mode
+python -m deed_ocr -i deed.pdf -o ./results --model gemini-2.5-pro-preview-06-05 --high-accuracy
 ```
 
 **Windows:**
 ```cmd
-# Use the powerful pro model
+# Use the most accurate pro model
 python -m deed_ocr -i deed.pdf -o .\results --model gemini-2.5-pro-preview-06-05
+
+# Maximum accuracy: pro model + high-accuracy mode
+python -m deed_ocr -i deed.pdf -o .\results --model gemini-2.5-pro-preview-06-05 --high-accuracy
 ```
 
 > **Note**: If you encounter a "404 NOT_FOUND" error, the model may not be available. Check [Google AI Studio](https://aistudio.google.com/) for current model availability.
