@@ -79,7 +79,6 @@ When you specify an `output_dir`, the workflow saves:
 
 - `{pdf_name}_result.json` - Complete structured result
 - `{pdf_name}_full_text.txt` - Combined text from all pages
-- `{pdf_name}_legal_descriptions.json` - Just the legal descriptions
 - `pages/page_N.json` - Individual page results
 
 ## Configuration

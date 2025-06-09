@@ -1,13 +1,13 @@
 # Core dependencies for deed-ocr
-google-cloud-vision>=3.4.5,<4.0.0
-boto3>=1.29.7,<2.0.0
-click>=8.1.7,<9.0.0
+google-cloud-vision
+boto3
+click
 python-dotenv
-pymupdf>=1.23.0,<2.0.0
-Pillow>=10.1.0,<11.0.0
-spacy>=3.7.2,<4.0.0
-pydantic>=2.5.0,<3.0.0
-google-genai>=0.1.0,<1.0.0
+pymupdf
+Pillow
+spacy
+pydantic
+google-genai
 json-repair
 
 # Optional LLM dependencies (install manually if needed)
