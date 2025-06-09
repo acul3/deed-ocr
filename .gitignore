@@ -30,6 +30,12 @@ htmlcov/
 out/
 output/
 results/
+results2/
+results-ocr/
+results-single
+results_da_law/
+results_deed/
+cli_output/
 
 # Credentials
 *.json

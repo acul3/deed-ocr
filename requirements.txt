@@ -1,0 +1,26 @@
+# Core dependencies for deed-ocr
+google-cloud-vision
+boto3
+click
+python-dotenv
+pymupdf
+Pillow
+spacy
+pydantic
+google-genai
+json-repair
+
+# Optional LLM dependencies (install manually if needed)
+# openai>=1.6.0,<2.0.0
+# transformers>=4.36.0,<5.0.0
+# torch>=2.1.0,<3.0.0
+
+# Optional layout detection dependencies (install manually if needed)
+# layoutparser>=0.3.4,<1.0.0
+# detectron2>=0.6,<1.0.0
+
+# Development dependencies (uncomment for development)
+# pytest>=7.4.3,<8.0.0
+# black>=23.11.0,<24.0.0
+# ruff>=0.1.6,<1.0.0
+# pytest-cov>=4.1.0,<5.0.0 
