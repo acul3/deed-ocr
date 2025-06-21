@@ -10,7 +10,7 @@ def test_direct_pdf_processing():
     print("=== Testing Direct PDF Processing ===")
     
     # Set API key
-    os.environ['GOOGLE_AI_API_KEY'] = 'AIzaSyBrwsGHpT3Qe5bzvjq2quNegHgULPcLFnc'
+    os.environ['GOOGLE_AI_API_KEY'] = ''
     
     # PDF file path
     pdf_path = "/Users/samsulrahmadani/Documents/deed-ocr/1460797.pdf"

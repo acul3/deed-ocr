@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import shutil
 import time
 from pathlib import Path
@@ -10,9 +11,47 @@ from pydantic import BaseModel, Field
 
 from deed_ocr.ocr.gemini_ocr import create_gemini_ocr_engine
 from deed_ocr.utils.pdf_converter import create_pdf_converter
+from deed_ocr.utils.excel_converter import convert_final_result_to_excel
+from deed_ocr.utils.trs_validator import TRSValidator, create_trs_validation_excel
 
 logger = logging.getLogger(__name__)
 
+
+def standardize_aliquot(aliquot_list):
+    """
+    Standardizes a list of aliquot strings by:
+    - Replacing ½ and 1/2 and /2 with 2
+    - Removing 1/4 and /4 suffixes
+    - Removing spaces
+    
+    Args:
+        aliquot_list: List of aliquot strings
+    
+    Returns:
+        List of standardized aliquot strings
+    
+    Examples:
+    ["W2NW1/4", "SE1/4NW1/4", "N2SW1/4", "SE1/4", "SW1/4NE1/4"] -> ["W2NW", "SENW", "N2SW", "SE", "SWNE"]
+    ["S½"] -> ["S2"]
+    ["E1/2NW1/4"] -> ["E2NW"]
+    ["E/2NW/4"] -> ["E2NW"]
+    ["E1/2 NW"] -> ["E2NW"]
+    """
+    standardized = []
+    
+    for aliquot_string in aliquot_list:
+        # Replace fractions with 2
+        aliquot = aliquot_string.replace('½', '2')
+        aliquot = aliquot.replace('1/2', '2')
+        aliquot = aliquot.replace('/2', '2')
+        
+        # Remove quarters (1/4 and /4)
+        aliquot = aliquot.replace('1/4', '')
+        aliquot = aliquot.replace('/4', '')
+        
+        standardized.append(aliquot)
+    
+    return standardized
 
 class WorkflowError(Exception):
     """Custom exception for workflow errors."""
@@ -40,21 +79,41 @@ class SimplifiedDeedResult(BaseModel):
 class SimplifiedDeedOCRWorkflow:
     """Simplified workflow for deed OCR processing using Gemini AI."""
     
-    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.5-flash-preview-05-20", dpi: int = 300, max_retries: int = 3, retry_delay: float = 5.0, high_accuracy: bool = False):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.5-flash", dpi: int = 300, max_retries: int = 3, retry_delay: float = 5.0, high_accuracy: bool = False, geodatabase_path: Optional[str] = None, counties_json_path: Optional[str] = None, enable_trs_validation: bool = True):
         """
         Initialize the simplified workflow.
         
         Args:
             api_key: Google AI API key
-            model: Gemini model to use (default: gemini-2.5-flash-preview-05-20)
+            model: Gemini model to use (default: gemini-2.5-flash)
             dpi: Image resolution for PDF conversion
             max_retries: Maximum number of retries for failed operations
             retry_delay: Delay between retries in seconds
             high_accuracy: Enable high-accuracy mode for better results
+            geodatabase_path: Path to PLSS geodatabase file for TRS validation
+            counties_json_path: Path to counties JSON file for state mapping
+            enable_trs_validation: Whether to enable TRS validation
         """
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.high_accuracy = high_accuracy
+        self.enable_trs_validation = enable_trs_validation
+        self.geodatabase_path = geodatabase_path
+        self.counties_json_path = counties_json_path
+        
+        # Initialize TRS validator if enabled and paths provided
+        self.trs_validator = None
+        if self.enable_trs_validation and (geodatabase_path or counties_json_path):
+            try:
+                self.trs_validator = TRSValidator(geodatabase_path, counties_json_path)
+                logger.info("TRS validator initialized successfully (geodatabase loaded once)")
+                if geodatabase_path:
+                    logger.info(f"  Geodatabase: {geodatabase_path}")
+                if counties_json_path:
+                    logger.info(f"  Counties file: {counties_json_path}")
+            except Exception as e:
+                logger.warning(f"Failed to initialize TRS validator: {str(e)}. TRS validation will be disabled.")
+                self.enable_trs_validation = False
         
         try:
             self.ocr_engine = create_gemini_ocr_engine(api_key, model=model)
@@ -143,7 +202,7 @@ class SimplifiedDeedOCRWorkflow:
         
         raise last_error
         
-    def process_pdf(self, pdf_path: Path, output_dir: Optional[Path] = None) -> SimplifiedDeedResult:
+    def process_pdf(self, pdf_path: Path, output_dir: Optional[Path] = None, force_reprocess: bool = False) -> SimplifiedDeedResult:
         """
         Process a deed PDF through the complete workflow.
         
@@ -152,11 +211,64 @@ class SimplifiedDeedOCRWorkflow:
         Args:
             pdf_path: Path to the deed PDF file
             output_dir: Optional directory to save results
+            force_reprocess: If True, reprocess even if output directory exists
             
         Returns:
             SimplifiedDeedResult containing all extracted information
         """
         logger.info(f"Starting simplified deed OCR workflow for: {pdf_path}")
+        
+        # Check if already processed (skip if output directory exists)
+        if output_dir and not force_reprocess:
+            pdf_name = Path(pdf_path).stem
+            pdf_output_dir = output_dir / pdf_name
+            if pdf_output_dir.exists() and pdf_output_dir.is_dir():
+                logger.info(f"Skipping processing - output directory already exists: {pdf_output_dir}")
+                # Try to load existing results if available
+                try:
+                    final_result_file = pdf_output_dir / "final_result.json"
+                    if final_result_file.exists():
+                        with open(final_result_file, 'r', encoding='utf-8') as f:
+                            existing_result = json.load(f)
+                        logger.info(f"Loaded existing results from {final_result_file}")
+                        # Create SimplifiedDeedResult from existing data
+                        return SimplifiedDeedResult(
+                            source_pdf=pdf_path.name,
+                            total_pages=existing_result.get("total_pages", 0),
+                            pages_data=existing_result.get("pages_data", []),
+                            combined_full_text=existing_result.get("full_text", ""),
+                            all_legal_descriptions=existing_result.get("legal_description_block", []),
+                            all_details=existing_result.get("details", {}),
+                            has_errors=False,
+                            error_summary={"processing_status": "skipped - already processed"},
+                            retry_needed=False
+                        )
+                    else:
+                        logger.info(f"Output directory exists but no final_result.json found, returning basic skip result")
+                        return SimplifiedDeedResult(
+                            source_pdf=pdf_path.name,
+                            total_pages=0,
+                            pages_data=[],
+                            combined_full_text="",
+                            all_legal_descriptions=[],
+                            all_details={},
+                            has_errors=False,
+                            error_summary={"processing_status": "skipped - already processed (no final result found)"},
+                            retry_needed=False
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not load existing results: {e}. Returning basic skip result.")
+                    return SimplifiedDeedResult(
+                        source_pdf=pdf_path.name,
+                        total_pages=0,
+                        pages_data=[],
+                        combined_full_text="",
+                        all_legal_descriptions=[],
+                        all_details={},
+                        has_errors=False,
+                        error_summary={"processing_status": "skipped - already processed (load error)", "load_error": str(e)},
+                        retry_needed=False
+                    )
         
         error_summary = {
             "pdf_conversion_errors": [],
@@ -331,9 +443,20 @@ class SimplifiedDeedOCRWorkflow:
         
     def _save_results(self, result: SimplifiedDeedResult, output_dir: Path, original_pdf_path: Path, token_usage: Dict[str, int]) -> None:
         """Save workflow results to output directory, with each PDF getting its own folder."""
-        # Create a folder named after the PDF file (without extension)
+        # Check if output_dir already ends with the PDF name (to avoid double nesting)
         pdf_name = Path(result.source_pdf).stem  # Remove .pdf extension
-        pdf_output_dir = output_dir / pdf_name
+        
+        # If the output directory already ends with the PDF name, use it directly
+        # Otherwise, create a subdirectory named after the PDF
+        if output_dir.name == pdf_name:
+            # CLI already created the PDF-specific directory
+            pdf_output_dir = output_dir
+            logger.info(f"Using existing PDF-specific directory: {pdf_output_dir}")
+        else:
+            # Create a folder named after the PDF file (backward compatibility)
+            pdf_output_dir = output_dir / pdf_name
+            logger.info(f"Creating new PDF-specific directory: {pdf_output_dir}")
+        
         pdf_output_dir.mkdir(parents=True, exist_ok=True)
         
         try:
@@ -425,6 +548,65 @@ class SimplifiedDeedOCRWorkflow:
                     json.dump(cleaned_final_result, f, indent=2, ensure_ascii=False)
                 
                 logger.info("Final result saved")
+
+                # ------------------------------------------------------------------
+                # Convert the final result JSON to Excel using instruction.csv mapping
+                # ------------------------------------------------------------------
+                try:
+                    instruction_csv_path = (Path(__file__).resolve().parent.parent / "instruction.csv").resolve()
+                    excel_output_path = pdf_output_dir / "final_result.xlsx"
+                    convert_final_result_to_excel(
+                        cleaned_final_result,
+                        excel_output_path,
+                        instruction_csv_path=instruction_csv_path if instruction_csv_path.exists() else None,
+                    )
+                    logger.info(f"Excel export saved to {excel_output_path}")
+                except Exception as excel_err:
+                    logger.error(f"Failed to convert final result to Excel: {excel_err}")
+
+                # ------------------------------------------------------------------
+                # Perform TRS validation if enabled
+                # ------------------------------------------------------------------
+                if self.enable_trs_validation and self.trs_validator:
+                    try:
+                        logger.info("Performing TRS validation...")
+                        trs_details_list = cleaned_final_result.get("TRS_details", [])
+                        if not isinstance(trs_details_list, list):
+                            trs_details_list = [trs_details_list] if trs_details_list else []
+                        
+                        # Extract document state from cleaned_final_result
+                        document_state = None
+                        if "details" in cleaned_final_result and isinstance(cleaned_final_result["details"], dict):
+                            document_state = cleaned_final_result["details"].get("state")
+                            if document_state:
+                                logger.info(f"Using document state for TRS validation: {document_state}")
+                        
+                        if trs_details_list:
+                            # Validate TRS details with document state
+                            validation_results = self.trs_validator.validate_trs_list(trs_details_list, document_state)
+                            
+                            # Create TRS validation Excel
+                            trs_validation_excel_path = pdf_output_dir / "trs_validation.xlsx"
+                            document_name = pdf_output_dir.name
+                            create_trs_validation_excel(
+                                trs_details_list,
+                                validation_results,
+                                trs_validation_excel_path,
+                                document_name
+                            )
+                            
+                            # Log validation summary
+                            valid_count = sum(1 for result in validation_results if result.is_valid)
+                            total_count = len(validation_results)
+                            logger.info(f"TRS validation completed: {valid_count}/{total_count} valid entries")
+                            logger.info(f"TRS validation results saved to {trs_validation_excel_path}")
+                        else:
+                            logger.info("No TRS details found for validation")
+                            
+                    except Exception as trs_err:
+                        logger.error(f"Failed to perform TRS validation: {trs_err}")
+                elif self.enable_trs_validation:
+                    logger.warning("TRS validation enabled but validator not initialized")
             
             logger.info("Full PDF analysis completed and saved")
             
@@ -501,11 +683,15 @@ class SimplifiedDeedOCRWorkflow:
         if full_text_file.exists():
             final_result["full_text"] = full_text_file.read_text(encoding='utf-8')
         
-        # Collect legal_description_block from pages (remove duplicates)
+        # Collect all data from pages (remove duplicates)
         pages_legal_descriptions = []
         pages_trs = []
         pages_reserve_retain = []
         pages_oil_mineral = []
+        pages_judgment_description = []
+        pages_aliquot = []
+        pages_interest_fraction = []
+        pages_trs_details = []
         
         for page_data in pages_data:
             # Collect legal descriptions
@@ -543,6 +729,54 @@ class SimplifiedDeedOCRWorkflow:
                     pages_oil_mineral.extend(oil_data)
                 elif oil_data:
                     pages_oil_mineral.append(str(oil_data))
+            
+            # Collect judgment_description
+            if "judgment_description" in page_data:
+                judgment_data = page_data["judgment_description"]
+                if isinstance(judgment_data, list):
+                    for judgment in judgment_data:
+                        if judgment and judgment not in pages_judgment_description:
+                            pages_judgment_description.append(judgment)
+                elif judgment_data and judgment_data not in pages_judgment_description:
+                    pages_judgment_description.append(str(judgment_data))
+            
+            # Collect aliquot
+            if "aliquot" in page_data:
+                aliquot_data = page_data["aliquot"]
+                if isinstance(aliquot_data, list):
+                    aliquot_data = standardize_aliquot(aliquot_data)
+                    for aliquot in aliquot_data:
+                        if aliquot and aliquot not in pages_aliquot:
+                            pages_aliquot.append(aliquot)
+                elif aliquot_data and aliquot_data not in pages_aliquot:
+                    aliquot = str(aliquot_data).replace('½', '2')
+                    aliquot = aliquot.replace('1/2', '2')
+                    aliquot = aliquot.replace('/2', '2')
+                    
+                    # Remove quarters (1/4 and /4)
+                    aliquot = aliquot.replace('1/4', '')
+                    aliquot = aliquot.replace('/4', '')
+                    pages_aliquot.append(str(aliquot))
+            
+            # Collect Interest_fraction
+            if "Interest_fraction" in page_data:
+                interest_data = page_data["Interest_fraction"]
+                if isinstance(interest_data, list):
+                    for interest in interest_data:
+                        if interest and interest not in pages_interest_fraction:
+                            pages_interest_fraction.append(interest)
+                elif interest_data and interest_data not in pages_interest_fraction:
+                    pages_interest_fraction.append(str(interest_data))
+            
+            # Collect TRS_details (objects/dictionaries)
+            if "TRS_details" in page_data:
+                trs_details_data = page_data["TRS_details"]
+                if isinstance(trs_details_data, list):
+                    # Add all objects from this page's TRS_details
+                    pages_trs_details.extend(trs_details_data)
+                elif trs_details_data:
+                    # Single object, add it to the list
+                    pages_trs_details.append(trs_details_data)
         
         # Merge legal_description_block (full_pdf + pages, remove duplicates)
         final_legal_descriptions = []
@@ -587,13 +821,19 @@ class SimplifiedDeedOCRWorkflow:
         
         final_result["TRS"] = final_trs
         
-        # Use reserve_retain and oil_mineral from pages
+        # Use all collected fields from pages
         final_result["reserve_retain"] = pages_reserve_retain
         final_result["oil_mineral"] = pages_oil_mineral
+        final_result["judgment_description"] = pages_judgment_description
+        final_result["aliquot"] = pages_aliquot
+        final_result["Interest_fraction"] = pages_interest_fraction
+        final_result["TRS_details"] = self._remove_duplicates_from_object_list(pages_trs_details)
         
         logger.info(f"Created final result with {len(final_legal_descriptions)} legal descriptions, "
                    f"{len(final_trs)} TRS entries, {len(pages_reserve_retain)} reserve_retain entries, "
-                   f"and {len(pages_oil_mineral)} oil_mineral entries")
+                   f"{len(pages_oil_mineral)} oil_mineral entries, {len(pages_judgment_description)} judgment_description entries, "
+                   f"{len(pages_aliquot)} aliquot entries, {len(pages_interest_fraction)} Interest_fraction entries, "
+                   f"and {len(pages_trs_details)} TRS_details entries")
         
         return final_result
 
@@ -615,6 +855,27 @@ class SimplifiedDeedOCRWorkflow:
                 result.append(item)
         return result
 
+    def _remove_duplicates_from_object_list(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Remove duplicate objects from a list while preserving order.
+        
+        Args:
+            items: List of dictionaries that may contain duplicates
+            
+        Returns:
+            List with duplicate objects removed, order preserved
+        """
+        seen = set()
+        result = []
+        for item in items:
+            if item:
+                # Convert dict to a hashable representation for duplicate detection
+                item_key = tuple(sorted(item.items())) if isinstance(item, dict) else str(item)
+                if item_key not in seen:
+                    seen.add(item_key)
+                    result.append(item)
+        return result
+
     def _calculate_estimated_cost(self, token_usage: Dict[str, int], model: str, high_accuracy: bool = False) -> Dict[str, Any]:
         """
         Calculate estimated cost based on token usage and model pricing.
@@ -622,7 +883,7 @@ class SimplifiedDeedOCRWorkflow:
         Args:
             token_usage: Dictionary containing token usage statistics
             model: Model name used for processing
-            high_accuracy: Whether high accuracy mode was used (only applies to gemini-2.5-flash-preview-05-20)
+            high_accuracy: Whether high accuracy mode was used (only applies to gemini-2.5-flash)
             
         Returns:
             Dictionary containing cost breakdown
@@ -635,12 +896,12 @@ class SimplifiedDeedOCRWorkflow:
         
         # Define pricing per million tokens
         pricing = {
-            "gemini-2.5-flash-preview-05-20": {
+            "gemini-2.5-flash": {
                 "input_cost_per_million": 0.15,
                 "output_cost_per_million_normal": 0.60,
                 "output_cost_per_million_high_accuracy": 3.50
             },
-            "gemini-2.5-pro-preview-06-05": {
+            "gemini-2.5-pro": {
                 "input_cost_per_million": 1.25,
                 "output_cost_per_million_high_accuracy": 10.00  # Pro model always uses high accuracy
             }
@@ -650,16 +911,16 @@ class SimplifiedDeedOCRWorkflow:
         if model in pricing:
             model_pricing = pricing[model]
         else:
-            logger.warning(f"Unknown model {model}, using gemini-2.5-flash-preview-05-20 pricing")
-            model_pricing = pricing["gemini-2.5-flash-preview-05-20"]
+            logger.warning(f"Unknown model {model}, using gemini-2.5-flash pricing")
+            model_pricing = pricing["gemini-2.5-flash"]
         
         # Calculate costs
         input_cost = (input_tokens / 1_000_000) * model_pricing["input_cost_per_million"]
         
         # Determine if high accuracy was actually used
-        # For gemini-2.5-flash-preview-05-20: use high_accuracy parameter
+        # For gemini-2.5-flash: use high_accuracy parameter
         # For all other models: always use high accuracy mode
-        actual_high_accuracy = high_accuracy if model == "gemini-2.5-flash-preview-05-20" else True
+        actual_high_accuracy = high_accuracy if model == "gemini-2.5-flash" else True
         
         if actual_high_accuracy and "output_cost_per_million_high_accuracy" in model_pricing:
             output_cost_per_million = model_pricing["output_cost_per_million_high_accuracy"]
@@ -696,6 +957,70 @@ class SimplifiedDeedOCRWorkflow:
         }
         
         return cost_breakdown
+
+    def _split_counties_in_trs_details(self, trs_details_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Split TRS_details objects that have multiple counties into separate objects.
+        
+        Args:
+            trs_details_list: List of TRS_details dictionaries
+            
+        Returns:
+            List with multi-county entries split into separate objects
+        """
+        expanded_trs_details = []
+        
+        for trs_detail in trs_details_list:
+            if not isinstance(trs_detail, dict) or "County" not in trs_detail:
+                # Skip if not a dictionary or no County field
+                expanded_trs_details.append(trs_detail)
+                continue
+            
+            county_field = trs_detail["County"]
+            if not isinstance(county_field, str):
+                # Skip if County is not a string
+                expanded_trs_details.append(trs_detail)
+                continue
+            
+            # Check if county field contains multiple counties (comma-separated)
+            if "," in county_field:
+                # Split counties and create separate objects
+                counties = [county.strip() for county in county_field.split(",")]
+                # Clean up county names (remove "County" suffix, handle variations)
+                cleaned_counties = []
+                for county in counties:
+                    # Remove "County" suffix if present (case-insensitive)
+                    if county.lower().endswith(" county"):
+                        county = county[:-7].strip()
+                    elif county.lower().endswith("county"):
+                        county = county[:-6].strip()
+                    
+                    # Only add non-empty county names
+                    if county:
+                        cleaned_counties.append(county)
+                
+                # Create separate TRS_details objects for each county
+                for county in cleaned_counties:
+                    new_trs_detail = dict(trs_detail)  # Copy all fields
+                    new_trs_detail["County"] = county  # Update with individual county
+                    expanded_trs_details.append(new_trs_detail)
+                
+                logger.info(f"Split TRS detail with counties '{county_field}' into {len(cleaned_counties)} separate entries: {cleaned_counties}")
+            else:
+                # Single county - clean up the name and keep as is
+                county = county_field.strip()
+                # Remove "County" suffix if present (case-insensitive)
+                if county.lower().endswith(" county"):
+                    county = county[:-7].strip()
+                elif county.lower().endswith("county"):
+                    county = county[:-6].strip()
+                
+                # Update the county field with cleaned name
+                cleaned_trs_detail = dict(trs_detail)
+                cleaned_trs_detail["County"] = county
+                expanded_trs_details.append(cleaned_trs_detail)
+        
+        return expanded_trs_details
 
     def _post_process_results(self, final_result: Dict[str, Any], full_text: str) -> tuple[Dict[str, Any], str]:
         """
@@ -734,13 +1059,39 @@ class SimplifiedDeedOCRWorkflow:
                 del cleaned_final_result["details"]["TRS"]
                 logger.info("Removed redundant details.TRS field")
         
+        # Split multiple counties in TRS_details before removing duplicates
+        if "TRS_details" in cleaned_final_result and isinstance(cleaned_final_result["TRS_details"], list):
+            original_count = len(cleaned_final_result["TRS_details"])
+            cleaned_final_result["TRS_details"] = self._split_counties_in_trs_details(cleaned_final_result["TRS_details"])
+            new_count = len(cleaned_final_result["TRS_details"])
+            if new_count > original_count:
+                logger.info(f"Expanded TRS_details from {original_count} to {new_count} entries after splitting multi-county entries")
+        
+        # Also handle TRS_details in details section
+        if "details" in cleaned_final_result and isinstance(cleaned_final_result["details"], dict):
+            if "TRS_details" in cleaned_final_result["details"] and isinstance(cleaned_final_result["details"]["TRS_details"], list):
+                original_count = len(cleaned_final_result["details"]["TRS_details"])
+                cleaned_final_result["details"]["TRS_details"] = self._split_counties_in_trs_details(cleaned_final_result["details"]["TRS_details"])
+                new_count = len(cleaned_final_result["details"]["TRS_details"])
+                if new_count > original_count:
+                    logger.info(f"Expanded details.TRS_details from {original_count} to {new_count} entries after splitting multi-county entries")
+        
         # Remove duplicates from all array/list fields (skip special fields)
         special_fields = {'token_usage', 'processing_status', 'error', 'error_info', 'full_text'}
         
         for key, value in cleaned_final_result.items():
-            if key not in special_fields and isinstance(value, list) and all(isinstance(item, str) for item in value):
+            if key not in special_fields and isinstance(value, list):
                 original_count = len(value)
-                cleaned_final_result[key] = self._remove_duplicates_from_list(value)
+                if key == 'TRS_details':
+                    # Handle TRS_details separately as it contains objects
+                    cleaned_final_result[key] = self._remove_duplicates_from_object_list(value)
+                elif all(isinstance(item, str) for item in value):
+                    # Handle string lists
+                    cleaned_final_result[key] = self._remove_duplicates_from_list(value)
+                else:
+                    # Skip mixed-type lists or other complex structures
+                    continue
+                    
                 new_count = len(cleaned_final_result[key])
                 if new_count < original_count:
                     logger.info(f"Removed {original_count - new_count} duplicates from {key}")
@@ -748,26 +1099,39 @@ class SimplifiedDeedOCRWorkflow:
         # Also clean up nested arrays in details
         if "details" in cleaned_final_result and isinstance(cleaned_final_result["details"], dict):
             for key, value in cleaned_final_result["details"].items():
-                if isinstance(value, list) and all(isinstance(item, str) for item in value):
+                if isinstance(value, list):
                     original_count = len(value)
-                    cleaned_final_result["details"][key] = self._remove_duplicates_from_list(value)
+                    if key == 'TRS_details':
+                        # Handle TRS_details separately as it contains objects
+                        cleaned_final_result["details"][key] = self._remove_duplicates_from_object_list(value)
+                    elif all(isinstance(item, str) for item in value):
+                        # Handle string lists
+                        cleaned_final_result["details"][key] = self._remove_duplicates_from_list(value)
+                    else:
+                        # Skip mixed-type lists or other complex structures
+                        continue
+                        
                     new_count = len(cleaned_final_result["details"][key])
                     if new_count < original_count:
                         logger.info(f"Removed {original_count - new_count} duplicates from details.{key}")
         
-        logger.info("Post-processing completed: cleaned watermarks and removed duplicates")
+        logger.info("Post-processing completed: cleaned watermarks, split multi-county TRS entries, and removed duplicates")
         return cleaned_final_result, cleaned_full_text
 
 
 def process_deed_pdf_simple(
     pdf_path: Path, 
     api_key: Optional[str] = None, 
-    model: str = "gemini-2.5-flash-preview-05-20",
+    model: str = "gemini-2.5-flash",
     output_dir: Optional[Path] = None,
     dpi: int = 300,
     max_retries: int = 3,
     retry_delay: float = 5.0,
-    high_accuracy: bool = False
+    high_accuracy: bool = False,
+    force_reprocess: bool = False,
+    geodatabase_path: Optional[str] = None,
+    counties_json_path: Optional[str] = None,
+    enable_trs_validation: bool = True
 ) -> SimplifiedDeedResult:
     """
     Simple function to process a deed PDF with minimal setup.
@@ -775,15 +1139,35 @@ def process_deed_pdf_simple(
     Args:
         pdf_path: Path to the PDF file
         api_key: Google AI API key (optional, can use environment variable)
-        model: Gemini model to use (default: gemini-2.5-flash-preview-05-20)
+        model: Gemini model to use (default: gemini-2.5-flash)
         output_dir: Optional output directory for results
         dpi: Image resolution for PDF conversion
         max_retries: Maximum number of retries for failed operations
         retry_delay: Delay between retries in seconds
         high_accuracy: Enable high-accuracy mode for better results
+        force_reprocess: If True, reprocess even if output directory exists
+        geodatabase_path: Path to PLSS geodatabase file for TRS validation (default: GEODATABASE_PATH env var)
+        counties_json_path: Path to counties JSON file for state mapping (default: COUNTIES_JSON_PATH env var)
+        enable_trs_validation: Whether to enable TRS validation
         
     Returns:
         SimplifiedDeedResult containing extracted information
     """
-    workflow = SimplifiedDeedOCRWorkflow(api_key=api_key, model=model, dpi=dpi, max_retries=max_retries, retry_delay=retry_delay, high_accuracy=high_accuracy)
-    return workflow.process_pdf(pdf_path, output_dir) 
+    # Use environment variables as defaults if not provided
+    if geodatabase_path is None:
+        geodatabase_path = os.getenv("GEODATABASE_PATH")
+    if counties_json_path is None:
+        counties_json_path = os.getenv("COUNTIES_JSON_PATH")
+    
+    workflow = SimplifiedDeedOCRWorkflow(
+        api_key=api_key, 
+        model=model, 
+        dpi=dpi, 
+        max_retries=max_retries, 
+        retry_delay=retry_delay, 
+        high_accuracy=high_accuracy,
+        geodatabase_path=geodatabase_path,
+        counties_json_path=counties_json_path,
+        enable_trs_validation=enable_trs_validation
+    )
+    return workflow.process_pdf(pdf_path, output_dir, force_reprocess) 

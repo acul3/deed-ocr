@@ -150,7 +150,7 @@ class VisionGeminiDeedOCRWorkflow:
         
         raise last_error
         
-    def process_pdf(self, pdf_path: Path, output_dir: Optional[Path] = None) -> VisionGeminiDeedResult:
+    def process_pdf(self, pdf_path: Path, output_dir: Optional[Path] = None, force_reprocess: bool = False) -> VisionGeminiDeedResult:
         """
         Process a deed PDF through the Vision + Gemini workflow.
         
@@ -159,11 +159,61 @@ class VisionGeminiDeedOCRWorkflow:
         Args:
             pdf_path: Path to the deed PDF file
             output_dir: Optional directory to save results
+            force_reprocess: If True, reprocess even if output directory exists
             
         Returns:
             VisionGeminiDeedResult containing all extracted and structured information
         """
         logger.info(f"Starting Vision + Gemini deed OCR workflow for: {pdf_path}")
+        
+        # Check if already processed (skip if output directory exists)
+        if output_dir and not force_reprocess:
+            pdf_name = Path(pdf_path).stem
+            pdf_output_dir = output_dir / f"{pdf_name}_vision_gemini"
+            if pdf_output_dir.exists() and pdf_output_dir.is_dir():
+                logger.info(f"Skipping processing - output directory already exists: {pdf_output_dir}")
+                # Try to load existing results if available
+                try:
+                    complete_result_file = pdf_output_dir / "complete_result.json"
+                    if complete_result_file.exists():
+                        with open(complete_result_file, 'r', encoding='utf-8') as f:
+                            existing_result = json.load(f)
+                        logger.info(f"Loaded existing results from {complete_result_file}")
+                        # Create VisionGeminiDeedResult from existing data
+                        return VisionGeminiDeedResult(
+                            source_pdf=pdf_path.name,
+                            total_pages=existing_result.get("total_pages", 0),
+                            vision_results=existing_result.get("vision_results", {}),
+                            gemini_structured_result=existing_result.get("gemini_structured_result", {}),
+                            combined_full_text=existing_result.get("combined_full_text", ""),
+                            has_errors=False,
+                            error_summary={"processing_status": "skipped - already processed"},
+                            retry_needed=False
+                        )
+                    else:
+                        logger.info(f"Output directory exists but no complete_result.json found, returning basic skip result")
+                        return VisionGeminiDeedResult(
+                            source_pdf=pdf_path.name,
+                            total_pages=0,
+                            vision_results={},
+                            gemini_structured_result={},
+                            combined_full_text="",
+                            has_errors=False,
+                            error_summary={"processing_status": "skipped - already processed (no complete result found)"},
+                            retry_needed=False
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not load existing results: {e}. Returning basic skip result.")
+                    return VisionGeminiDeedResult(
+                        source_pdf=pdf_path.name,
+                        total_pages=0,
+                        vision_results={},
+                        gemini_structured_result={},
+                        combined_full_text="",
+                        has_errors=False,
+                        error_summary={"processing_status": "skipped - already processed (load error)", "load_error": str(e)},
+                        retry_needed=False
+                    )
         
         error_summary = {
             "pdf_conversion_errors": [],
@@ -460,7 +510,7 @@ class VisionGeminiDeedOCRWorkflow:
         """
         Calculate estimated cost based on token usage and model pricing.
         Note: Vision workflow doesn't control high_accuracy parameter, but models other than 
-        gemini-2.5-flash-preview-05-20 always use high accuracy mode.
+        gemini-2.5-flash always use high accuracy mode.
         
         Args:
             token_usage: Dictionary containing token usage statistics
@@ -477,12 +527,12 @@ class VisionGeminiDeedOCRWorkflow:
         
         # Define pricing per million tokens
         pricing = {
-            "gemini-2.5-flash-preview-05-20": {
+            "gemini-2.5-flash": {
                 "input_cost_per_million": 0.15,
                 "output_cost_per_million_normal": 0.60,
                 "output_cost_per_million_high_accuracy": 3.50
             },
-            "gemini-2.5-pro-preview-06-05": {
+            "gemini-2.5-pro": {
                 "input_cost_per_million": 1.25,
                 "output_cost_per_million_high_accuracy": 10.00  # Pro model always uses high accuracy
             }
@@ -492,14 +542,14 @@ class VisionGeminiDeedOCRWorkflow:
         if model in pricing:
             model_pricing = pricing[model]
         else:
-            logger.warning(f"Unknown model {model}, using gemini-2.5-flash-preview-05-20 pricing")
-            model_pricing = pricing["gemini-2.5-flash-preview-05-20"]
+            logger.warning(f"Unknown model {model}, using gemini-2.5-flash pricing")
+            model_pricing = pricing["gemini-2.5-flash"]
         
         # Calculate costs
         input_cost = (input_tokens / 1_000_000) * model_pricing["input_cost_per_million"]
         
-        # Vision workflow: gemini-2.5-flash-preview-05-20 uses normal mode, others use high accuracy
-        if model == "gemini-2.5-flash-preview-05-20":
+        # Vision workflow: gemini-2.5-flash uses normal mode, others use high accuracy
+        if model == "gemini-2.5-flash":
             output_cost_per_million = model_pricing["output_cost_per_million_normal"]
             accuracy_mode = "normal"
         else:
@@ -604,7 +654,8 @@ def process_deed_pdf_vision_gemini(
     output_dir: Optional[Path] = None,
     dpi: int = 300,
     max_retries: int = 3,
-    retry_delay: float = 5.0
+    retry_delay: float = 5.0,
+    force_reprocess: bool = False
 ) -> VisionGeminiDeedResult:
     """
     Simple function to process a deed PDF with Vision + Gemini workflow.
@@ -617,6 +668,7 @@ def process_deed_pdf_vision_gemini(
         dpi: Image resolution for PDF conversion
         max_retries: Maximum number of retries for failed operations
         retry_delay: Delay between retries in seconds
+        force_reprocess: If True, reprocess even if output directory exists
         
     Returns:
         VisionGeminiDeedResult containing extracted and structured information
@@ -628,4 +680,4 @@ def process_deed_pdf_vision_gemini(
         max_retries=max_retries,
         retry_delay=retry_delay
     )
-    return workflow.process_pdf(pdf_path, output_dir) 
+    return workflow.process_pdf(pdf_path, output_dir, force_reprocess) 

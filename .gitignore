@@ -9,6 +9,7 @@ venv/
 ENV/
 .venv/
 
+
 # Testing
 .coverage
 .pytest_cache/
@@ -26,6 +27,9 @@ htmlcov/
 *.env
 !env.example
 
+#all folder start with results_
+results_*/
+result_*/
 # OCR outputs
 out/
 output/
@@ -37,9 +41,13 @@ results_da_law/
 results_deed/
 cli_output/
 
-# Credentials
+# Credentials except example.json
 *.json
 !*example.json
+!counties_list.json
+
+*.zip
+*.ipynb
 
 # OS
 .DS_Store

@@ -1,0 +1,34 @@
+Fields,Instruction
+Township,value TRS_details['Township'] 
+Range,value TRS_details['Range'] 
+Section,value TRS_details['Section'] 
+Aliquot,"value ""aliquot"" "
+Simplified TRS,"value TRS_details['Township']  + TRS_details['Range'] + TRS_details['Section']  (add zero in front if there is only one number , 2 --> 02)"
+TRS_Row_Code,"details['state']_details['county']:TRS_details['Township'] -TRS_details['Range']-TRS_details['Section'] for example ""Colorado_Weld:0080N-0560W-020"""
+TRS_Doc_Code_List,all TRS_Doc_Code_List
+All_TRS_from_Document,value legal_description_block
+Document_Type,details['document_type']
+Recording_Date,details['recorded_date']
+Document_Date,details['document_date']
+Effective_Date,details['effective_date']
+Granting_Language,value Interest_fraction
+Lease_Royalty,"details['lease_details']['lease_royalty""]"
+Lease_Royalty_Amended,"details['lease_details']['lease_royalty""]"
+Lease_Primary_Term,"details['lease_details']['lease_term""]"
+Book,details['book_county']
+Page,details['page_county']
+Ordered_Adjudged_Decreed,details['judgment_description']
+Gross_Acreage,"details['lease_details']['gross_acreage""]"
+Gross_Acreage_Check,"""true"""
+Lease Secondary_Term,"details['lease_details']['lease_secondary_lease_term""]"
+Reception Number,details['reception_number']
+Grantors_interest_mentioned,details['deed_details']['grantors_interest']
+Interest fraction,value Interest_fraction
+Reservation,value reservation
+Subject_to,details['deed_details']['subjecto']
+County,details['county']
+State,details['state']
+Grantor,details['grantor']['name']
+Grantee,details['grantee']['name']
+Grantor_address,details['grantor']['address']
+Grantee_address,details['grantee']['address']

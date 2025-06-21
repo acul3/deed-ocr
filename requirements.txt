@@ -7,8 +7,14 @@ pymupdf
 Pillow
 spacy
 pydantic
+openpyxl
+pandas
 google-genai
 json-repair
+geopandas
+
+# Optional TRS validation dependencies (install manually if needed)
+# geopandas>=0.14.0,<1.0.0  # For TRS validation against PLSS geodatabase
 
 # Optional LLM dependencies (install manually if needed)
 # openai>=1.6.0,<2.0.0

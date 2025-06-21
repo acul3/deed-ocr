@@ -25,7 +25,7 @@ class GeminiOCRError(Exception):
 class GeminiOCREngine:
     """OCR Engine using Google Gemini AI for deed document processing."""
     
-    def __init__(self, api_key: str, model: str = "gemini-2.5-flash-preview-05-20", max_retries: int = 3, retry_delay: float = 2.0):
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash", max_retries: int = 3, retry_delay: float = 2.0):
         """
         Initialize Gemini OCR Engine.
         
@@ -225,17 +225,17 @@ Output Format:
       "<Full legal property descriptions including metes and bounds, lot/block references, and any survey information>"
    ],
    "details":{
-      "document_type":"<Primary document category (e.g., Deed, Decree, Stipulation, Lease)>",
+      "document_type":"<Primary document category (e.g., Deed, Decree, Stipulation, OGL(Oil and Gas Lease))>",
       "document_subtype":"<Specific document type (e.g., Warranty Deed, Quitclaim Deed, Mineral Deed, Oil & Gas Lease, Decree of Heirship, Quiet Title Decree)>",
       "parties":{
          "<party_type_1>":[
-            "<Names of parties in this role>"
+           {"name":"<Name of the party>", "address":"<Address of the party if any>"},// if there are multiple parties in the same role, include all in the array
          ],
          "<party_type_2>":[
-            "<Names of parties in this role>"
+            {"name":"<Name of the party>", "address":"<Address of the party if any>"},// if there are multiple parties in the same role, include all in the array
          ],
          "<additional_party_types>":[
-            "<Names as needed>"
+            {"name":"<Name of the additional party>", "address":"<Address of the additional party if any>"},// if there are multiple parties in the same role, include all in the array
          ]
       },
       "TRS":[
@@ -427,9 +427,9 @@ Party Type Guidelines:
                             mime_type=mime_type,
                             data=image_bytes,
                         ),
-                        types.Part.from_text(text="""Extract and structure information from legal property document PDF images.
+                        types.Part.from_text(text="""Carefully Extract and structure information from legal property document PDF images.
 
-Task: Analyze the provided legal property document image and extract all relevant information into the specified JSON format.
+Task: Analyze carefully the provided legal property document image and extract all relevant information into the specified JSON format.
 
 Output Format:
 {
@@ -437,25 +437,39 @@ Output Format:
    "legal_description_block":[
       "<sentence contain contains the legal description of the property >"
    ],
+   "judgment_description":["<Decision reached by court as phrased in the document. Starting with the words "IT IS ORDERED, ADJUDGED AND DECREED that...>"],
    "reserve_retain":["<sentence contains any of the terms similar or equal to reservation,exception,or retain.>"],
    "oil_mineral":["sentence where either "oil" or "minerals" are mentioned"],
+   "aliquot":["<Aliquot description found in most documents,including metes and bounds, lot/block references all.">"],
+   "Interest_fraction":"[<sentence that include if the extent of interest transferred from the grantor to the grantee(s)>]",
+   "grantors_interest_mentioned":"<sentence provide an excerpt where there is a declaration of the grantor conveying "all" of their interest, which might refer broadly to conveying all the real property or all the parcel of land described>",
    "TRS":[
          "<Township/Range/Section reference 1, e.g.Township 7 North, Range 58 West , T2N R3W S14>",
          "<Township/Range/Section reference 2>"
       ]
+    TRS_details:[
+        {
+            "Township":"<Township number> e.g 10N",
+            "Range":"<Range number> e.g 59W",
+            "Section":"<Section number> e.g 10",
+            "TRS":"<Township/Range/Section reference, e.g. T2N R3W S14>"
+            "County":"<County name ONLY> e.g Weld,Dodge,etc (comma separated if multiple counties)",
+        }, // if there are multiple TRS, include all in the array
+    ]
 }
 
 Instructions:
 1. Extract ALL text exactly as it appears in the document for "full_text"
-2. Use empty String for any fields not present in the document"""),
+2. Use empty String or None for any fields not present in the document
+3. Aliquot should be standardized remove 1/4 and /4 , and replace 1/2 with 2 for example : S½ -> S2, "The East Half of the Northwest Quarter" -> "E2NW",SW1/4NE1/4 -> "SWNE", "E1/2NW1/4" -> "E2NW", "E/2NW/4" -> "E2NW", "E2NW", "E1/2 NW" -> "E2NW"""),
                     ],
                 ),
             ]
             
             # Determine if we should use high accuracy mode
-            # For gemini-2.5-flash-preview-05-20: use high_accuracy parameter
+            # For gemini-2.5-flash: use high_accuracy parameter
             # For all other models: always use high accuracy mode
-            use_high_accuracy = high_accuracy if self.model == "gemini-2.5-flash-preview-05-20" else True
+            use_high_accuracy = high_accuracy if self.model == "gemini-2.5-flash" else True
             
             if use_high_accuracy:
                 # High-accuracy mode: no thinking budget limitation
@@ -486,15 +500,37 @@ Instructions:
                 }
                 logger.info(f"Token usage - Input: {input_tokens}, Output: {output_tokens}, Total: {total_tokens}")
             
-            # Parse JSON response with fallback
-            result = self._parse_json_response(response.text, fallback_structure)
-            result["token_usage"] = token_usage
-            logger.info("Successfully processed image with simplified prompt using Gemini AI")
-            return result
+            try:
+                result = self._parse_json_response(response.text)
+                result["token_usage"] = token_usage
+                logger.info("Successfully processed Image with simplified prompt using Gemini AI")
+                return result
+            except json.JSONDecodeError as json_error:
+                logger.error(f"JSON parsing error: {json_error}")
+                logger.error(f"try to repair the json")
+                try:
+                    result = json_repair.loads(response.text)
+                    logger.info("Successfully parsed JSON after cleaning")
+                    return result
+                except Exception as e:
+                    logger.error("Failed to parse JSON even after cleaning")
+                    # Return a fallback structure
+                    return {
+                        "error": "JSON parsing failed",
+                        "raw_response": response.text,
+                        "full_text": "",
+                        "legal_description_block": [],
+                        "details": {}
+                    } 
             
-        except GeminiOCRError:
-            raise  # Re-raise our custom errors
+        
         except Exception as e:
+            try:
+                result = json_repair.loads(response.text)
+                logger.info("Successfully parsed JSON after cleaning")
+                return result
+            except Exception as f:
+                logger.error(f"Failed to parse JSON even after cleaning {str(f)}")
             error_info = self._handle_api_error(e, "process_image_bytes_simplified")
             logger.error(f"Unexpected error in process_image_bytes_simplified: {str(e)}")
             
@@ -529,7 +565,7 @@ Instructions:
                             mime_type="application/pdf",
                             data=pdf_bytes,
                         ),
-                        types.Part.from_text(text="""Extract and structure information from legal property document PDF images.
+                        types.Part.from_text(text="""Carefully analyze, extract, and structure information from provided legal property document PDF images.
 
 Task: Analyze the provided legal property document image and extract all relevant information into the specified JSON format.
 
@@ -539,33 +575,37 @@ Output Format:
       "<sentence that include legal property descriptions including metes and bounds, lot/block references,etc>"
    ],
    "details":{
-      "document_type":"<Primary document category (e.g., Deed, Decree, Stipulation, Lease)>",
-      "document_subtype":"<Specific document type (e.g., Warranty Deed, Quitclaim Deed, Mineral Deed, Oil & Gas Lease, Decree of Heirship, Quiet Title Decree)>",
-      "parties":{
-         "<party_type_1>":[
-            "<Names of parties in this role>"
-         ],
-         "<party_type_2>":[
-            "<Names of parties in this role>"
-         ],
-         "<additional_party_types>":[
-            "<Names as needed>"
-         ]
-      },
-      "TRS":[
-         "<Township/Range/Section reference 1, e.g., Township 7 North, Range 58 West , T2N R3W S14>",
-         "<Township/Range/Section reference 2>"
-      ],
+      "document_type":"<Primary document category can be interpreted from the title of the document or first page of the document (Deed, Decree, Stipulation or Oil & Gas Lease)>",
+      "document_subtype":"<Specific document type (e.g., Warranty Deed, Quitclaim Deed, Mineral Deed, Decree of Heirship, Quiet Title Decree,Stipulation of Interest)>",
+      "document_date":"<Date in which the document was made and/or executed, use Format: YYYY-MM-DD>",
+      "recorded_date":"<Date in which the document was recorded, use Format: YYYY-MM-DD>",
+      "effective_date":"<Date in which the document became effective if any, use Format: YYYY-MM-DD>",
+      "reception_number":"<the reception or recording number of the document if any>",
+      "grantor":[{
+          "name":"<Name of the which party is conveying rights >",
+          "address":"<Address of the grantor if any, change the state name to its abbreviation if any>" 
+          "type":"<Type of the grantor, e.g.grantor(for deed), Lessor(for oil and gas lease) ,plaintiff (for decree),Deceased(for decree),Stipulating_Party(for stipulation)>"
+      },// if there are multiple grantees, include all in the array],
+      "grantee":[{
+          "name":"<Name of the which party is conveying rights >",
+          "address":"<Address of the grantee if any, change the state name to its abbreviation if any>"
+          "type":"<Type of the grantee, e.g.grantee(for deed), lessee(for oil and gas lease), defendant(for decree),Recipients(for decree),Stipulating_Party(for stipulation)>"
+      },// if there are multiple grantees, include all in the array],
       "deed_details":{
-         "grantors_interest":"<grantors interest in the property>",
+         "grantors_interest":"<Specifically check if there is a declaration of the grantor conveying all or a portion of their interest return true or false otherwise return null>",
          "Interest_fraction":"<sentence that include if the extent of interest transferred from the grantor to the grantee(s)>",
          "subject_to":"<sentence that includes the phrase "subject to," focusing on documented encumbrances or reservations.>",
       },
       "lease_details":{
-         "gross_acreage":"<the total acreage of the property>",
-         "lease_royalty":"<the royalty percentage of the property>",
-         "lease_term":"<the term of the lease>",
+         "gross_acreage":"<number of the total acreage of the property>",
+         "lease_royalty":"<number of the royalty percentage of the property>",
+         "lease_primary_term":"<the term of the lease>",
+         "lease_secondary_lease_term":"<the secondary lease term of the lease following the primary lease term if any>",
       },
+      "county":"<primary county for the property being conveyed in this legal document if any> e.g Weld ",
+      "state":"<primary state for the property being conveyed in this legal document if any> e.g Colorado",
+      "book_county":"<identifier for the document in the county record>",
+      "page_county":"<identifier number for the page of the document in the county record>",
       "<other relevant fields>":"<values>"
    }
 }
@@ -577,16 +617,7 @@ Instructions:
 4. If multiple properties are described, include all in the respective arrays
 5. Add any document-specific fields not covered above as "<other relevant fields>"
 
-Party Type Guidelines:
-- For DEEDS: Use "grantor" and "grantee"
-- For LEASES: Use "lessor" and "lessee"
-- For DECREES:  Use "plaintiff" and "defendant"
-- For STIPULATION: Use "Stipulating_Party_1", "Stipulating_Party_2" so on
-- For OTHER DOCUMENTS: Use the party designations as they appear in the document
-
 IMPORTANT: If no values are found in the document for deed_details or lease_details, set the entire object to None.
-If the document is not a deed, set "deed_details": None
-If the document is not a lease, set "lease_details": None
 Only populate these objects if the document contains the relevant information"""),
                     ],
                 ),
@@ -754,7 +785,7 @@ Party Type Guidelines:
 - For OTHER DOCUMENTS: Use the party designations as they appear in the document
 
 IMPORTANT: If no values are found in the document for deed_details or lease_details, set the entire object to None.
-If the document is not a deed, set "deed_details": None
+If the document is not a Deed,Decree, or Stipulation set "deed_details": None
 If the document is not a lease, set "lease_details": None
 Only populate these objects if the document contains the relevant information
 
@@ -817,13 +848,13 @@ ocr text: {ocr_text}"""
             raise
 
 
-def create_gemini_ocr_engine(api_key: Optional[str] = None, model: str = "gemini-2.5-flash-preview-05-20", max_retries: int = 3, retry_delay: float = 2.0) -> GeminiOCREngine:
+def create_gemini_ocr_engine(api_key: Optional[str] = None, model: str = "gemini-2.5-flash", max_retries: int = 3, retry_delay: float = 2.0) -> GeminiOCREngine:
     """
     Factory function to create Gemini OCR Engine.
     
     Args:
         api_key: Google AI API key (if None, will try to get from environment)
-        model: Gemini model to use (default: gemini-2.5-flash-preview-05-20)
+        model: Gemini model to use (default: gemini-2.5-flash)
         max_retries: Maximum number of retries for failed operations
         retry_delay: Delay between retries in seconds
         
