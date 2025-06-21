@@ -40,6 +40,7 @@ results-single
 results_da_law/
 results_deed/
 cli_output/
+oil_deed/
 
 # Credentials except example.json
 *.json
